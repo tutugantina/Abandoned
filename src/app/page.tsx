@@ -27,6 +27,7 @@ interface ProcessedLink {
   convertedUrl: string
   name: string
   phone: string
+  address: string
   isDuplicate: boolean
   duplicateCount: number
 }
@@ -92,40 +93,69 @@ export default function Home() {
       return
     }
 
-    // Deduplication based on original URL
-    const seen = new Map<string, { count: number; firstIndex: number }>()
-    const results: ProcessedLink[] = []
+    // Parse all URLs first
+    const parsed = lines.map((url, index) => {
+      const name = decodeURIComponent(extractParam(url, 'name') || '')
+      const phone = decodeURIComponent(extractParam(url, 'phone') || '')
+      const address = decodeURIComponent(extractParam(url, 'address') || '')
+      return { url, name, phone, address, index }
+    })
 
-    lines.forEach((url, index) => {
-      const existing = seen.get(url)
-      if (existing) {
-        existing.count++
-        // Update the duplicate count on the first occurrence
-        results[existing.firstIndex].duplicateCount = existing.count
-        results[existing.firstIndex].isDuplicate = true
-      } else {
-        seen.set(url, { count: 1, firstIndex: results.length })
-        const name = decodeURIComponent(extractParam(url, 'name') || '')
-        const phone = decodeURIComponent(extractParam(url, 'phone') || '')
+    // Deduplication: group by phone number
+    // Same phone = duplicate, keep the one with longest address
+    const phoneGroups = new Map<string, typeof parsed>()
+    for (const item of parsed) {
+      const key = item.phone || `__no_phone_${item.index}__`
+      if (!phoneGroups.has(key)) {
+        phoneGroups.set(key, [])
+      }
+      phoneGroups.get(key)!.push(item)
+    }
+
+    const results: ProcessedLink[] = []
+    let totalDuplicates = 0
+
+    for (const [, group] of phoneGroups) {
+      if (group.length === 1) {
+        // No duplicate
+        const item = group[0]
         results.push({
-          id: `link-${index}`,
-          originalUrl: url,
-          convertedUrl: convertUrl(url),
-          name,
-          phone,
+          id: `link-${item.index}`,
+          originalUrl: item.url,
+          convertedUrl: convertUrl(item.url),
+          name: item.name,
+          phone: item.phone,
+          address: item.address,
           isDuplicate: false,
           duplicateCount: 1,
         })
+      } else {
+        // Duplicate found (same phone) — pick the one with longest address
+        group.sort((a, b) => b.address.length - a.address.length)
+        const best = group[0]
+        totalDuplicates += group.length - 1
+        results.push({
+          id: `link-${best.index}`,
+          originalUrl: best.url,
+          convertedUrl: convertUrl(best.url),
+          name: best.name,
+          phone: best.phone,
+          address: best.address,
+          isDuplicate: true,
+          duplicateCount: group.length,
+        })
       }
-    })
+    }
+
+    // Sort by original order
+    results.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
 
     setProcessedLinks(results)
     setIsProcessed(true)
 
-    const duplicateCount = lines.length - results.length
     toast({
       title: 'Berhasil diproses!',
-      description: `${results.length} link unik dihasilkan${duplicateCount > 0 ? `, ${duplicateCount} duplikat dihapus` : ''}.`,
+      description: `${results.length} link unik dihasilkan${totalDuplicates > 0 ? `, ${totalDuplicates} duplikat dihapus (berdasarkan nomor HP)` : ''}.`,
     })
   }, [inputText, toast])
 
@@ -189,7 +219,7 @@ export default function Home() {
       .map((l) => l.trim())
       .filter((l) => l.length > 0).length
     const uniqueCount = processedLinks.length
-    const duplicateCount = totalInput - uniqueCount
+    const duplicateCount = processedLinks.reduce((sum, l) => sum + (l.isDuplicate ? l.duplicateCount - 1 : 0), 0)
     const hasDuplicates = duplicateCount > 0
     return { totalInput, uniqueCount, duplicateCount, hasDuplicates }
   }, [inputText, processedLinks])
@@ -341,7 +371,7 @@ export default function Home() {
                       {stats.duplicateCount} link duplikat terdeteksi
                     </p>
                     <p className="text-xs text-amber-700 mt-0.5">
-                      Link yang sama hanya akan muncul sekali di hasil. Duplikat ditandai dengan badge kuning.
+                      Nomor HP yang sama dihitung duplikat. Alamat terpanjang yang dipilih. Ditandai dengan badge kuning.
                     </p>
                   </div>
                 </div>
@@ -420,7 +450,12 @@ export default function Home() {
                                 {link.isDuplicate && (
                                   <Badge className="text-xs bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-100">
                                     <AlertTriangle className="w-3 h-3 mr-1" />
-                                    Duplikat ({link.duplicateCount}x)
+                                    Duplikat HP ({link.duplicateCount}x)
+                                  </Badge>
+                                )}
+                                {link.address && (
+                                  <Badge variant="outline" className="text-xs max-w-[200px] truncate" title={link.address}>
+                                    {link.address}
                                   </Badge>
                                 )}
                               </div>
